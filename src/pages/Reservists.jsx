@@ -57,7 +57,7 @@ export default function Reservists() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const [stats, setStats] = useState({ total:0, active:0, inactive:0, standby:0, retired:0, ready:0, bcmt:0, adt:0, vadt:0, rotc:0 });
+  const [stats, setStats] = useState({ total:0, active:0, bcmt:0, adt:0, vadt:0, rotc:0 });
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, id: null });
 
   const formatDate = (val) => {
@@ -290,6 +290,8 @@ const handleSubmit = async () => {
           emergency_contact_name: form.emergencyContactName || null,
           emergency_contact_phone: form.emergencyContactNumber || null,
           emergency_contact_address: form.emergencyContactAddress || null,
+          group_id: form.groupId || null,
+          squadron_id: form.squadronId || null,
         };
 
         const response = await createReservist(requestData);
@@ -338,6 +340,8 @@ const handleSubmit = async () => {
           emergency_contact_name: form.emergencyContactName || null,
           emergency_contact_phone: form.emergencyContactNumber || null,
           emergency_contact_address: form.emergencyContactAddress || null,
+          group_id: form.groupId || null,
+          squadron_id: form.squadronId || null,
         };
         const response = await updateReservist(modal.row.id, requestData);
         if (response.data.status === 'success') {

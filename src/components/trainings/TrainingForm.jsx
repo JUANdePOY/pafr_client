@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { X, Upload, FileText, Image, File, Trash2 } from 'lucide-react';
 import {
   createInternalTraining,
@@ -9,9 +9,12 @@ import {
   uploadExternalLetterOrder,
   downloadInternalAttachment,
   downloadExternalAttachment,
+  deleteInternalAttachment,
+  deleteExternalAttachment,
 } from '@/services/trainingsService';
+import { assignFacilitator, getFacilitators } from '@/services/attendanceApiService';
 import { useToast } from '@/components/ui/Toast';
-import RegistrationBuilder from './RegistrationBuilder';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SquadronParticipantBlocks from './SquadronParticipantBlocks';
 import SquadronSlotLimits from './SquadronSlotLimits';
 import SearchableFacilitatorDropdown from './SearchableFacilitatorDropdown';
@@ -108,6 +111,13 @@ function LetterOrderUpload({ file, onFileChange, existingAttachments = [], train
   const [dragOver, setDragOver] = useState(false);
   const [fileError, setFileError] = useState('');
   const [downloadingId, setDownloadingId] = useState(null);
+  const [attachments, setAttachments] = useState(existingAttachments);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    setAttachments(existingAttachments);
+  }, [existingAttachments]);
 
   const processFile = (f) => {
     setFileError('');
@@ -173,6 +183,26 @@ function LetterOrderUpload({ file, onFileChange, existingAttachments = [], train
     }
   };
 
+  const handleConfirmDelete = async () => {
+    if (!trainingId || !deleteTarget?.id) return;
+    setDeleting(true);
+    try {
+      const result = isExternal
+        ? await deleteExternalAttachment(trainingId, deleteTarget.id)
+        : await deleteInternalAttachment(trainingId, deleteTarget.id);
+      if (result.success) {
+        setAttachments((prev) => prev.filter((a) => a.id !== deleteTarget.id));
+        setDeleteTarget(null);
+      } else {
+        setFileError(result.message || 'Could not delete file.');
+      }
+    } catch {
+      setFileError('Could not delete file.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -184,12 +214,12 @@ function LetterOrderUpload({ file, onFileChange, existingAttachments = [], train
         </span>
       </div>
 
-      {Array.isArray(existingAttachments) && existingAttachments.length > 0 && (
+      {Array.isArray(attachments) && attachments.length > 0 && (
         <div className="space-y-2 mb-3">
           <p className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
             Uploaded files
           </p>
-          {existingAttachments.map((att) => (
+          {attachments.map((att) => (
             <div
               key={att.id}
               className="flex items-center gap-3 p-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg"
@@ -205,14 +235,32 @@ function LetterOrderUpload({ file, onFileChange, existingAttachments = [], train
                   {formatSize(att.size_bytes)}
                 </p>
               </div>
-              <button
-                type="button"
-                disabled={!trainingId || downloadingId === att.id}
-                onClick={() => handleDownloadExisting(att)}
-                className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50 shrink-0"
-              >
-                {downloadingId === att.id ? 'Downloading…' : 'Download'}
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  disabled={!trainingId || downloadingId === att.id}
+                  onClick={() => handleDownloadExisting(att)}
+                  className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50"
+                >
+                  {downloadingId === att.id ? 'Downloading…' : 'Download'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => inputRef.current?.click()}
+                  className="p-1.5 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-600 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+                  title="Replace file"
+                >
+                  <Upload size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteTarget(att)}
+                  className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10 text-neutral-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                  title="Remove file"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -290,12 +338,46 @@ function LetterOrderUpload({ file, onFileChange, existingAttachments = [], train
         onChange={(e) => { const f = e.target.files?.[0]; if (f) processFile(f); e.target.value = ''; }}
       />
       {fileError && <p className="mt-1 text-xs text-red-500">{fileError}</p>}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Remove attachment?"
+        description={
+          deleteTarget
+            ? `"${deleteTarget.original_filename || 'This file'}" will be permanently removed.`
+            : ''
+        }
+        confirmLabel="Remove"
+        cancelLabel="Keep file"
+        destructive
+        loading={deleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
+    </div>
+  );
+}
+
+// ─── Existing Facilitators (read-only list) ─────────────────────────────────────
+function ExistingFacilitatorsList({ facilitators }) {
+  if (!Array.isArray(facilitators) || facilitators.length === 0) return null;
+  return (
+    <div className="mb-1.5 flex flex-wrap gap-1.5">
+      {facilitators.map((f) => (
+        <span
+          key={f.user_id}
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20"
+          title={f.service_number || ''}
+        >
+          {[f.rank, `${f.last_name || ''}, ${f.first_name || ''}`].filter(Boolean).join(' ')}
+        </span>
+      ))}
     </div>
   );
 }
 
 // ─── Internal Training Fields ──────────────────────────────────────────────────
-function InternalFields({ form, onChange, onFileChange, errors, disabled, trainingId, existingAttachments }) {
+function InternalFields({ form, onChange, onFileChange, errors, disabled, trainingId, existingAttachments, existingFacilitators }) {
   const selectedSquadronIds = useMemo(
     () => (form.participantBlocks || [])
       .filter((b) => b.squadronId)
@@ -345,9 +427,11 @@ function InternalFields({ form, onChange, onFileChange, errors, disabled, traini
             className={inputCls} placeholder="Training venue..." />
         </FormGroup>
         <FormGroup label="Facilitator">
+          <ExistingFacilitatorsList facilitators={existingFacilitators} />
           <SearchableFacilitatorDropdown
             value={form.instructor}
             onChange={(val) => onChange('instructor', val)}
+            onSelect={(reservist) => onChange('facilitatorUserId', reservist?.userId ?? null)}
             squadronIds={selectedSquadronIds}
             disabled={disabled}
           />
@@ -381,7 +465,7 @@ function InternalFields({ form, onChange, onFileChange, errors, disabled, traini
 }
 
 // ─── External Training Fields ──────────────────────────────────────────────────
-function ExternalFields({ form, onChange, errors, trainingId, existingAttachments }) {
+function ExternalFields({ form, onChange, errors, trainingId, existingAttachments, existingFacilitators }) {
   const selectedSquadronIds = useMemo(
     () => (form.squadronSlotLimits || [])
       .filter((b) => b.squadronId)
@@ -423,9 +507,11 @@ function ExternalFields({ form, onChange, errors, trainingId, existingAttachment
           </select>
         </FormGroup>
         <FormGroup label="Facilitator">
+          <ExistingFacilitatorsList facilitators={existingFacilitators} />
           <SearchableFacilitatorDropdown
             value={form.instructor}
             onChange={(val) => onChange('instructor', val)}
+            onSelect={(reservist) => onChange('facilitatorUserId', reservist?.userId ?? null)}
             squadronIds={selectedSquadronIds}
             disabled={false}
           />
@@ -457,14 +543,14 @@ function ExternalFields({ form, onChange, errors, trainingId, existingAttachment
 const defaultInternal = {
   title: '', description: '', startDate: '', endDate: '',
   activityType: '', status: 'published', location: '',
-  instructor: '',
+  instructor: '', facilitatorUserId: null,
   requirements: '', letterOrderFile: null,
   participantBlocks: [],
 };
 const defaultExternal = {
   title: '', description: '', startDate: '', startTime: '',
   venue: '', status: 'draft', capacity: '',
-  instructor: '',
+  instructor: '', facilitatorUserId: null,
   squadronSlotLimits: [],
   letterOrderFile: null,
 };
@@ -480,18 +566,9 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
       : TRAINING_TYPES.INTERNAL;
 
   const trainingType = initialType;
-  const [activeTab, setActiveTab]       = useState('details');
   const [submitting, setSubmitting]     = useState(false);
   const [errors, setErrors]             = useState({});
-  const [registrationFields, setRegistrationFields] = useState(
-    Array.isArray(training?.registration_fields) ? training.registration_fields : []
-  );
-  const handleRegistrationChange = (fields) => {
-    setRegistrationFields(fields);
-    if (errors.registration) {
-      setErrors(prev => ({ ...prev, registration: undefined }));
-    }
-  };
+  const [existingFacilitators, setExistingFacilitators] = useState([]);
 
   // BUG FIX: use str() helper so null values from DB never crash .trim() or
   // controlled-input warnings. ?? '' keeps 0 and false but converts null/undefined.
@@ -500,16 +577,14 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
     ...(training && initialType === TRAINING_TYPES.INTERNAL ? {
       title:           str(training.title),
       description:     str(training.description),
-      // start_datetime is what the backend SELECT returns for internal trainings
       startDate:       toDateString(training.start_datetime || training.start_date),
       endDate:         toDateString(training.end_datetime   || training.end_date),
-      // backend aliases activity_type -> type in the SELECT
       activityType:    str(training.type),
-      // map legacy 'upcoming' -> 'published' so the select doesn't show blank
       status:          training.status === 'upcoming' ? 'published' : (training.status || 'published'),
-      // backend aliases venue -> location in the SELECT
       location:        str(training.location || training.venue),
       instructor:      str(training.instructor),
+      // ASSUMPTION: field name on the training GET response not yet confirmed — verify against actual API shape
+      facilitatorUserId: training.facilitator_user_id ?? training.facilitatorUserId ?? null,
       requirements:    str(training.requirements),
       letterOrderFile: null,
       participantBlocks: buildParticipantBlocksFromGroups(training.participant_groups),
@@ -533,9 +608,26 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
         slotLimit: limit.slot_limit ?? '',
       })) : [],
       instructor: str(training.instructor),
+      // ASSUMPTION: field name on the training GET response not yet confirmed — verify against actual API shape
+      facilitatorUserId: training.facilitator_user_id ?? training.facilitatorUserId ?? null,
       letterOrderFile: null,
     } : {}),
   });
+
+  // Load currently-assigned facilitators for display when editing (read-only list —
+  // backend allows multiple facilitators per training, no removal in this form).
+  useEffect(() => {
+    if (!training?.id) {
+      setExistingFacilitators([]);
+      return;
+    }
+    const params = trainingType === TRAINING_TYPES.INTERNAL
+      ? { training_id: training.id }
+      : { external_training_id: training.id };
+    getFacilitators(params)
+      .then((res) => setExistingFacilitators(res?.data?.data || []))
+      .catch(() => setExistingFacilitators([]));
+  }, [training?.id, trainingType]);
 
   const handleInternalChange = (key, value) => {
     setInternalForm(prev => ({ ...prev, [key]: value }));
@@ -555,9 +647,6 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
     } else {
       if (!externalForm.title?.trim()) errs.title     = 'Title is required.';
       if (!externalForm.startDate)     errs.startDate = 'Start date is required.';
-      if (!registrationFields || registrationFields.length === 0) {
-        errs.registration = 'Registration form must have at least one field.';
-      }
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -609,7 +698,6 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
               slot_limit: Number(block.slotLimit),
             })),
           capacity:    null,
-          registration_fields: registrationFields,
         };
       }
 
@@ -659,6 +747,29 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
         }
       }
 
+      const facilitatorUserId = trainingType === TRAINING_TYPES.INTERNAL
+        ? internalForm.facilitatorUserId
+        : externalForm.facilitatorUserId;
+
+      if (facilitatorUserId) {
+        const savedId = result.data?.id ?? training?.id;
+        if (savedId) {
+          const assignPayload = trainingType === TRAINING_TYPES.INTERNAL
+            ? { user_id: facilitatorUserId, training_id: savedId }
+            : { user_id: facilitatorUserId, external_training_id: savedId };
+          try {
+            await assignFacilitator(assignPayload);
+          } catch (assignErr) {
+            setErrors({
+              submit:
+                assignErr.response?.data?.message ||
+                'Training was saved, but assigning the facilitator failed. You can try again from edit.',
+            });
+            return;
+          }
+        }
+      }
+
       onSubmit?.();
     } catch (error) {
       const errorMsg = error.response?.data?.message || 'Failed to save training. Please try again.';
@@ -697,41 +808,6 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
           </button>
         </div>
 
-        {/* ── Tab Bar (External only) ── */}
-        {isExternal && (
-          <div className="flex items-center px-6 border-b border-neutral-200 dark:border-neutral-800 shrink-0 gap-0.5">
-            {[
-              { id: 'details',      label: 'Details' },
-              { id: 'registration', label: 'Registration Form', count: registrationFields.length },
-            ].map(tab => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition-all ${
-                  activeTab === tab.id
-                    ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                    : errors.registration && tab.id === 'registration'
-                      ? 'border-transparent text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300'
-                      : 'border-transparent text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
-                }`}
-              >
-                {tab.label}
-                {tab.count > 0 && (
-                  <span className="bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold rounded-full px-1.5 py-0.5">
-                    {tab.count}
-                  </span>
-                )}
-                {tab.id === 'registration' && errors.registration && (
-                  <span className="bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-bold rounded-full px-1.5 py-0.5">
-                    !
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* ── Scrollable Form Body ── */}
         <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
           <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -744,33 +820,19 @@ export default function TrainingForm({ training, onClose, onSubmit, initialKind 
                 disabled={submitting}
                 trainingId={training?.id}
                 existingAttachments={training?.attachments}
+                existingFacilitators={existingFacilitators}
               />
             )}
 
-            {isExternal && activeTab === 'details' && (
+            {isExternal && (
               <ExternalFields
                 form={externalForm}
                 onChange={handleExternalChange}
                 errors={errors}
                 trainingId={training?.id}
                 existingAttachments={training?.attachments}
+                existingFacilitators={existingFacilitators}
               />
-            )}
-
-            {isExternal && activeTab === 'registration' && (
-              <div className="min-h-[420px] w-full">
-                <RegistrationBuilder
-                  initialFields={registrationFields}
-                  trainingTitle={externalForm.title || 'Training Registration'}
-                  onChange={handleRegistrationChange}
-                />
-              </div>
-            )}
-
-            {errors.registration && isExternal && activeTab === 'registration' && (
-              <div className="mt-4 p-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-lg text-xs text-red-600 dark:text-red-400">
-                {errors.registration}
-              </div>
             )}
 
             {errors.submit && (
